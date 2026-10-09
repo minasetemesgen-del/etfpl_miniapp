@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 import core
 import fpl_views
-from config import BOT_TOKEN, DEV_MODE, ENTRY_FEE_BIRR, RUN_BOT, WEBAPP_URL
+from config import ADMIN_TELEGRAM_ID, BOT_TOKEN, DEV_MODE, ENTRY_FEE_BIRR, RUN_BOT, WEBAPP_URL
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -93,9 +93,6 @@ async def upstream_error_handler(request: Request, exc: requests.RequestExceptio
 # Telegram authentication
 # ---------------------------------------------------------------------------
 def validate_init_data(init_data: str) -> dict:
-    """Checks the signed `initData` Telegram gives the Mini App, exactly as
-    described in Telegram's docs. This is what proves a request really comes
-    from that Telegram user — without it, anyone could claim to be anyone."""
     if not init_data:
         raise HTTPException(401, "Please open this app from inside Telegram.")
     pairs = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -128,7 +125,6 @@ def current_user(
     x_telegram_init_data: str = Header(default=""),
     x_dev_user: str = Header(default=""),
 ) -> dict:
-    # Browser testing only — enabled with DEV_MODE=1, never on the live server.
     if DEV_MODE and x_dev_user.isdigit():
         return {"id": int(x_dev_user), "first_name": "Dev", "last_name": "User", "username": f"dev{x_dev_user}"}
     return validate_init_data(x_telegram_init_data)
@@ -158,9 +154,13 @@ def home(user: dict = Depends(current_user)):
     live_gw = core.get_live_gameweek()
 
     out = {
-        "user": {"id": tid, "name": _display_name(user), "first_name": user.get("first_name")},
+        "user": {
+            "id": tid,
+            "name": _display_name(user),
+            "first_name": user.get("first_name"),
+            "is_admin": tid == ADMIN_TELEGRAM_ID,  # Lets app.js know if current user is admin
+        },
         "fee": ENTRY_FEE_BIRR,
-        "prize_percent": int(core.PRIZE_SHARE * 100),
         "registered": bool(me),
         "team": {"id": me["team_id"], "name": me["team_name"]} if me else None,
         "entry": None,
@@ -179,7 +179,6 @@ def home(user: dict = Depends(current_user)):
             "pending": bool(entry and not entry["paid"]),
             "entrants": n,
             "pot": n * ENTRY_FEE_BIRR,
-            "prize": round(n * ENTRY_FEE_BIRR * core.PRIZE_SHARE),
         }
 
     if live_gw:
@@ -222,8 +221,6 @@ def pay(user: dict = Depends(current_user)):
 
 @app.post("/api/pay/check")
 def pay_check(user: dict = Depends(current_user)):
-    """The app calls this while the user is paying, so the entry is confirmed
-    the instant Chapa says yes instead of waiting for the background job."""
     confirmed = core.confirm_pending_for_user(user["id"])
     window = core.get_entry_window()
     paid = False
@@ -255,14 +252,12 @@ def leaderboard(user: dict = Depends(current_user)):
             "rank": mine["rank"], "name": mine["username"], "team_name": mine["team_name"],
             "points": mine["points"], "is_me": True,
         }
-    pot = len(board) * ENTRY_FEE_BIRR
     return {
         "gameweek": gw,
         "entrants": len(board),
         "top": top,
         "me": me,
-        "pot": pot,
-        "prize": round(pot * core.PRIZE_SHARE),
+        "pot": len(board) * ENTRY_FEE_BIRR if tid == ADMIN_TELEGRAM_ID else None,
     }
 
 
@@ -328,6 +323,6 @@ def settings(body: SettingsBody, user: dict = Depends(current_user)):
 
 
 # ---------------------------------------------------------------------------
-# The website itself (must be mounted last)
+# The website itself
 # ---------------------------------------------------------------------------
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
