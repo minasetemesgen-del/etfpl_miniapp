@@ -173,11 +173,35 @@ img { display: block; }
 .hero .big { font-size: 38px; font-weight: 900; letter-spacing: -1px; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
 .hero .sub { color: rgba(255, 255, 255, .72); font-size: 13px; }
 .hero .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 16px 0; }
+.hero .stats.two { grid-template-columns: repeat(2, 1fr); }
 .hero .stat { background: rgba(255, 255, 255, .10); border-radius: 14px; padding: 10px; backdrop-filter: blur(4px); }
 .hero .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
 .hero .stat span { font-size: 11px; color: rgba(255, 255, 255, .7); text-transform: uppercase; letter-spacing: .06em; }
 .hero .btn { box-shadow: 0 8px 22px rgba(0, 0, 0, .25); background: var(--green); color: #1a002a; }
 .hero .pill.ok { background: rgba(0, 255, 133, .2); color: var(--green); }
+
+/* ---------- prize card ---------- */
+.prize-card {
+  display: flex; align-items: center; gap: 14px; padding: 14px;
+  border-color: color-mix(in srgb, var(--gold) 45%, var(--line));
+  background:
+    radial-gradient(260px 120px at 0% 0%, rgba(255, 207, 63, .16), transparent 70%),
+    var(--surface);
+}
+.prize-card .eyebrow { font-size: 11.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--gold); }
+.prize-title { font-size: 21px; font-weight: 900; letter-spacing: -.3px; line-height: 1.15; margin-top: 3px; overflow-wrap: anywhere; }
+.prize-img {
+  flex: none; width: 96px; height: 96px; border-radius: 18px; padding: 6px;
+  display: grid; place-items: center; overflow: hidden;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .14), rgba(255, 255, 255, .04));
+  border: 1px solid var(--line);
+}
+.prize-img img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, .35)); }
+.admin-card { border-style: dashed; border-color: var(--warn); }
+.admin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.admin-grid > div { background: var(--surface-2); border-radius: 12px; padding: 10px; }
+.admin-grid span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.admin-grid b { font-size: 15px; font-variant-numeric: tabular-nums; }
 
 .input {
   width: 100%; padding: 14px; border-radius: 14px; font: inherit; font-size: 16px;
