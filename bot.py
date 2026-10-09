@@ -1,16 +1,10 @@
 """
 ETFPL — FPL Weekly Contest Telegram Bot (with Mini App launcher)
------------------------------------------------------------------
-Same commands as before, now built on core.py so the bot and the Mini App
-share one database and one set of rules. New: /app opens the Mini App,
-and deadline reminders are sent automatically.
-
-Normally this file is started for you by server.py (one service runs both
-the website and the bot). To run ONLY the bot: python bot.py
 """
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
@@ -31,6 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 EAT = timezone(timedelta(hours=3))  # East Africa Time (Ethiopia)
+CURRENT_PRIZE_NAME = os.environ.get("PRIZE_NAME", "PS5 Console")
 
 
 def fmt_deadline(deadline):
@@ -54,7 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome to the FPL Weekly Contest! 🏆\n\n"
         f"Entry fee: {ENTRY_FEE_BIRR} birr per gameweek. Highest scorer that "
-        "gameweek wins the prize.\n\n"
+        f"gameweek wins the prize ({CURRENT_PRIZE_NAME}).\n\n"
         "Tap the button below for the full app — leaderboard, league table, "
         "fixtures, your team and transfers.\n\n"
         "Or use commands:\n"
@@ -101,7 +96,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
-    core.register_user(user.id, user.username or user.first_name, team_id, info["name"])
+    await asyncio.to_thread(core.register_user, user.id, user.username or user.first_name, team_id, info["name"])
     await update.message.reply_text(
         f"✅ Registered! \"{info['name']}\" (ID {team_id}) is linked.\nNow run /pay to enter this gameweek.",
         reply_markup=app_keyboard(),
@@ -130,16 +125,17 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_pending_payments(context: ContextTypes.DEFAULT_TYPE):
-    """Background job: automatically verifies all pending payments with Chapa
-    and confirms entries with zero admin involvement."""
-    pending = core.db_execute(
+    pending = await asyncio.to_thread(
+        core.db_execute,
         "SELECT telegram_id, gameweek, tx_reference FROM entries WHERE paid=0 AND tx_reference IS NOT NULL",
         fetch=True,
     )
     for telegram_id, gw, tx_ref in pending:
         try:
-            if await asyncio.to_thread(core.verify_payment, tx_ref) and core.mark_paid(telegram_id, gw):
-                core.add_notification(
+            verified = await asyncio.to_thread(core.verify_payment, tx_ref)
+            if verified and await asyncio.to_thread(core.mark_paid, telegram_id, gw):
+                await asyncio.to_thread(
+                    core.add_notification,
                     telegram_id, "payment", "Payment confirmed ✅",
                     f"You're entered in Gameweek {gw}. Good luck!",
                 )
@@ -154,9 +150,6 @@ async def check_pending_payments(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Background job: reminds registered users who haven't entered yet, once
-    ~24h and once ~3h before the FPL deadline. Users can switch this off in
-    the app (🔔 → Deadline reminders)."""
     try:
         window = await asyncio.to_thread(core.get_entry_window)
     except Exception:
@@ -174,9 +167,10 @@ async def deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
     label = "less than 3 hours" if kind == 3 else "less than 24 hours"
     title = f"GW{gw} entries close soon"
     body = f"{label.capitalize()} left to enter Gameweek {gw} ({fmt_deadline(window['deadline'])})."
-    for telegram_id in core.reminder_targets(gw, kind):
-        core.add_notification(telegram_id, "deadline", title, body)
-        core.mark_reminded(telegram_id, gw, kind)
+    targets = await asyncio.to_thread(core.reminder_targets, gw, kind)
+    for telegram_id in targets:
+        await asyncio.to_thread(core.add_notification, telegram_id, "deadline", title, body)
+        await asyncio.to_thread(core.mark_reminded, telegram_id, gw, kind)
         try:
             await context.bot.send_message(
                 telegram_id,
@@ -189,7 +183,7 @@ async def deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
 
 async def my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    me = core.get_user(user.id)
+    me = await asyncio.to_thread(core.get_user, user.id)
     if not me:
         await update.message.reply_text("You haven't registered yet. Use /register <fpl_team_id>.")
         return
@@ -205,7 +199,7 @@ async def my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     gw = window["gameweek"]
-    entry = core.get_entry(user.id, gw)
+    entry = await asyncio.to_thread(core.get_entry, user.id, gw)
     status = "Not entered this gameweek yet — run /pay."
     if entry:
         status = (
@@ -249,7 +243,7 @@ async def announce_winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         gw = int(context.args[0]) if context.args else await asyncio.to_thread(core.get_live_gameweek)
-        results = await asyncio.to_thread(core.contest_leaderboard, gw, 0)  # fresh scores
+        results = await asyncio.to_thread(core.contest_leaderboard, gw, 0)
     except Exception:
         logger.exception("announcewinner failed")
         await update.message.reply_text("Couldn't fetch scores just now — please try again in a moment.")
@@ -258,23 +252,26 @@ async def announce_winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"No confirmed entries for GW{gw}.")
         return
 
-    winner = results[0]
+    top_points = results[0]["points"]
+    winners = [r for r in results if r["points"] == top_points]
+    winner_names = ", ".join(w["username"] for w in winners)
     total_pot = len(results) * ENTRY_FEE_BIRR
-    prize = total_pot * core.PRIZE_SHARE
 
     await update.message.reply_text(
-        f"🏆 GW{gw} Winner: {winner['username']} with {winner['points']} points!\n"
-        f"Pot: {total_pot} birr → Prize: {prize:.0f} birr (50%)"
+        f"🏆 GW{gw} Winner: {winner_names} with {top_points} points!\n"
+        f"Prize: {CURRENT_PRIZE_NAME} 🎁\n"
+        f"(Admin Pot Total: {total_pot} birr)"
     )
-    await context.bot.send_message(
-        winner["telegram_id"],
-        f"🎉 Congrats! You won GW{gw} with {winner['points']} points. Prize: {prize:.0f} birr!",
-    )
-    # Everyone who entered also gets it in their in-app notifications.
+    for winner in winners:
+        await context.bot.send_message(
+            winner["telegram_id"],
+            f"🎉 Congrats! You won GW{gw} with {winner['points']} points! Prize: {CURRENT_PRIZE_NAME}!",
+        )
     for r in results:
-        core.add_notification(
-            r["telegram_id"], "winner", f"GW{gw} winner: {winner['username']}",
-            f"{winner['username']} won with {winner['points']} points. You finished #{r['rank']} with {r['points']}.",
+        await asyncio.to_thread(
+            core.add_notification,
+            r["telegram_id"], "winner", f"GW{gw} winner: {winner_names}",
+            f"{winner_names} won with {top_points} points. You finished #{r['rank']} with {r['points']}.",
         )
 
 
@@ -292,8 +289,6 @@ def build_application():
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("announcewinner", announce_winner))
 
-    # Automatically checks Chapa for completed payments in the background —
-    # this is what makes confirmation fully automatic, no admin needed.
     app.job_queue.run_repeating(check_pending_payments, interval=PAYMENT_CHECK_INTERVAL_SECONDS, first=10)
     app.job_queue.run_repeating(deadline_reminders, interval=600, first=60)
     return app
