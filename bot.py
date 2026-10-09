@@ -30,6 +30,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+# The HTTP library logs every Telegram request URL, and that URL contains the
+# bot's secret token. Keep it out of the logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 EAT = timezone(timedelta(hours=3))  # East Africa Time (Ethiopia)
 
