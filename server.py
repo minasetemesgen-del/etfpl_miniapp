@@ -76,6 +76,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ETFPL Mini App", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_stale_pages(request: Request, call_next):
+    """Telegram's built-in browser caches aggressively. Making the website
+    files 'revalidate every time' means an update shows up on the next open
+    instead of leaving phones on an old copy that no longer matches the server."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/api/") and path != "/health":
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.exception_handler(core.ContestError)
 async def contest_error_handler(request: Request, exc: core.ContestError):
     return JSONResponse({"detail": exc.message, "code": exc.code}, status_code=400)
