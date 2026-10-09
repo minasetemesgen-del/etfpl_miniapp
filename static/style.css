@@ -173,6 +173,7 @@ img { display: block; }
 .hero .big { font-size: 38px; font-weight: 900; letter-spacing: -1px; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
 .hero .sub { color: rgba(255, 255, 255, .72); font-size: 13px; }
 .hero .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 16px 0; }
+.hero .stats.single { grid-template-columns: 1fr; }
 .hero .stat { background: rgba(255, 255, 255, .10); border-radius: 14px; padding: 10px; backdrop-filter: blur(4px); }
 .hero .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
 .hero .stat span { font-size: 11px; color: rgba(255, 255, 255, .7); text-transform: uppercase; letter-spacing: .06em; }
