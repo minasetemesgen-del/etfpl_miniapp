@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import timezone
@@ -22,7 +23,7 @@ from urllib.parse import parse_qsl
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -88,7 +89,7 @@ async def no_stale_pages(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
     if not path.startswith("/api/") and path != "/health":
-        response.headers["Cache-Control"] = "no-cache"
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 
@@ -371,6 +372,32 @@ def settings(body: SettingsBody, user: dict = Depends(current_user)):
 
 
 # ---------------------------------------------------------------------------
-# The website itself (must be mounted last)
+# The home page. The links to app.js and style.css are stamped with a code
+# made from the files' contents, so the moment you change a file the address
+# changes too — and Telegram can never keep showing an old copy.
+# ---------------------------------------------------------------------------
+_ASSET_LINK = re.compile(r'(/(?:app\.js|style\.css))(?:\?v=[^"\']*)?')
+
+
+def _asset_version():
+    h = hashlib.sha1()
+    for name in ("index.html", "app.js", "style.css"):
+        h.update((STATIC_DIR / name).read_bytes())
+    return h.hexdigest()[:10]
+
+
+def stamp_assets(html: str, version: str) -> str:
+    return _ASSET_LINK.sub(lambda m: f"{m.group(1)}?v={version}", html)
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def index_page():
+    html = stamp_assets((STATIC_DIR / "index.html").read_text(encoding="utf-8"), _asset_version())
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------------------
+# The rest of the website (must be mounted last)
 # ---------------------------------------------------------------------------
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
