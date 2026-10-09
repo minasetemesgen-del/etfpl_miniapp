@@ -11,10 +11,11 @@ the website and the bot). To run ONLY the bot: python bot.py
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import core
 from config import (
@@ -261,14 +262,18 @@ async def announce_winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     winner = results[0]
     total_pot = len(results) * ENTRY_FEE_BIRR
     prize = total_pot * core.PRIZE_SHARE
+    # If you've set a prize (e.g. "PlayStation 5") the winner is told that;
+    # otherwise they're told the cash amount.
+    prize_text = core.get_prize()["text"] or f"{prize:.0f} birr"
 
     await update.message.reply_text(
         f"🏆 GW{gw} Winner: {winner['username']} with {winner['points']} points!\n"
-        f"Pot: {total_pot} birr → Prize: {prize:.0f} birr (50%)"
+        f"Pot: {total_pot} birr → 50% cash: {prize:.0f} birr\n"
+        f"Prize announced to the winner: {prize_text}"
     )
     await context.bot.send_message(
         winner["telegram_id"],
-        f"🎉 Congrats! You won GW{gw} with {winner['points']} points. Prize: {prize:.0f} birr!",
+        f"🎉 Congrats! You won GW{gw} with {winner['points']} points. Prize: {prize_text}!",
     )
     # Everyone who entered also gets it in their in-app notifications.
     for r in results:
@@ -276,6 +281,68 @@ async def announce_winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
             r["telegram_id"], "winner", f"GW{gw} winner: {winner['username']}",
             f"{winner['username']} won with {winner['points']} points. You finished #{r['rank']} with {r['points']}.",
         )
+
+
+PRIZE_HELP = (
+    "🎁 How to change the prize shown in the app:\n\n"
+    "• Text only:  /setprize PlayStation 5\n"
+    "• Picture + text: send a picture and write the caption  /setprize PlayStation 5\n"
+    "  (tip: send it as a File instead of a Photo to keep a transparent PNG sharp)\n"
+    "• Remove everything:  /clearprize"
+)
+
+
+def _prize_status():
+    p = core.get_prize()
+    return f"Now showing: {p['text'] or '(no text)'} · picture: {'yes' if p['has_image'] else 'no'}"
+
+
+async def set_prize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("Admins only.")
+        return
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await update.message.reply_text(f"{PRIZE_HELP}\n\n{_prize_status()}")
+        return
+    shown = core.set_prize_text(text)
+    await update.message.reply_text(f"✅ Prize text updated to: {shown}\n{_prize_status()}")
+
+
+async def set_prize_picture(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A picture (or image file) whose caption starts with /setprize."""
+    if not is_admin(update):
+        return
+    msg = update.message
+    caption = re.sub(r"^/setprize(@\w+)?", "", msg.caption or "").strip()
+    try:
+        if msg.photo:
+            tg_file, mime = await msg.photo[-1].get_file(), "image/jpeg"
+        else:
+            doc = msg.document
+            if doc.file_size and doc.file_size > core.MAX_PRIZE_IMAGE_BYTES:
+                raise core.ContestError("too_big", "That picture is too big — please keep it under 5 MB.")
+            tg_file, mime = await doc.get_file(), doc.mime_type or "image/png"
+        data = bytes(await tg_file.download_as_bytearray())
+        core.save_prize_image(data, mime)
+    except core.ContestError as e:
+        await update.message.reply_text(e.message)
+        return
+    except Exception:
+        logger.exception("Prize picture upload failed")
+        await update.message.reply_text("Couldn't save that picture — please try again.")
+        return
+    if caption:
+        core.set_prize_text(caption)
+    await update.message.reply_text(f"✅ Prize picture updated.\n{_prize_status()}")
+
+
+async def clear_prize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("Admins only.")
+        return
+    core.clear_prize()
+    await update.message.reply_text("🧹 Prize text and picture removed. The app now shows “To be announced”.")
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +358,14 @@ def build_application():
     app.add_handler(CommandHandler("mystatus", my_status))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("announcewinner", announce_winner))
+    app.add_handler(CommandHandler("setprize", set_prize))
+    app.add_handler(CommandHandler("clearprize", clear_prize))
+    app.add_handler(
+        MessageHandler(
+            filters.CaptionRegex(r"^/setprize") & (filters.PHOTO | filters.Document.IMAGE),
+            set_prize_picture,
+        )
+    )
 
     # Automatically checks Chapa for completed payments in the background —
     # this is what makes confirmation fully automatic, no admin needed.
