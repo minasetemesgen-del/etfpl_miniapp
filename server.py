@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 import core
 import fpl_views
-from config import BOT_TOKEN, DEV_MODE, ENTRY_FEE_BIRR, RUN_BOT, WEBAPP_URL
+from config import ADMIN_TELEGRAM_ID, BOT_TOKEN, DEV_MODE, ENTRY_FEE_BIRR, RUN_BOT, WEBAPP_URL
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -138,6 +138,10 @@ def _iso(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _is_admin(user):
+    return user["id"] == ADMIN_TELEGRAM_ID
+
+
 def _display_name(user):
     return user.get("username") or user.get("first_name") or "Player"
 
@@ -153,6 +157,7 @@ def health():
 @app.get("/api/home")
 def home(user: dict = Depends(current_user)):
     tid = user["id"]
+    admin = _is_admin(user)
     me = core.get_user(tid)
     window = core.get_entry_window()
     live_gw = core.get_live_gameweek()
@@ -160,7 +165,7 @@ def home(user: dict = Depends(current_user)):
     out = {
         "user": {"id": tid, "name": _display_name(user), "first_name": user.get("first_name")},
         "fee": ENTRY_FEE_BIRR,
-        "prize_percent": int(core.PRIZE_SHARE * 100),
+        "is_admin": admin,
         "registered": bool(me),
         "team": {"id": me["team_id"], "name": me["team_name"]} if me else None,
         "entry": None,
@@ -178,9 +183,11 @@ def home(user: dict = Depends(current_user)):
             "paid": bool(entry and entry["paid"]),
             "pending": bool(entry and not entry["paid"]),
             "entrants": n,
-            "pot": n * ENTRY_FEE_BIRR,
-            "prize": round(n * ENTRY_FEE_BIRR * core.PRIZE_SHARE),
         }
+        # Money figures are for the admin only.
+        if admin:
+            out["entry"]["pot"] = n * ENTRY_FEE_BIRR
+            out["entry"]["prize"] = round(n * ENTRY_FEE_BIRR * core.PRIZE_SHARE)
 
     if live_gw:
         board = core.contest_leaderboard(live_gw)
@@ -255,15 +262,18 @@ def leaderboard(user: dict = Depends(current_user)):
             "rank": mine["rank"], "name": mine["username"], "team_name": mine["team_name"],
             "points": mine["points"], "is_me": True,
         }
-    pot = len(board) * ENTRY_FEE_BIRR
-    return {
+    out = {
         "gameweek": gw,
         "entrants": len(board),
         "top": top,
         "me": me,
-        "pot": pot,
-        "prize": round(pot * core.PRIZE_SHARE),
+        "is_admin": _is_admin(user),
     }
+    if _is_admin(user):
+        pot = len(board) * ENTRY_FEE_BIRR
+        out["pot"] = pot
+        out["prize"] = round(pot * core.PRIZE_SHARE)
+    return out
 
 
 # ---------------------------------------------------------------------------
