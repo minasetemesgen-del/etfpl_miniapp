@@ -22,13 +22,13 @@ from urllib.parse import parse_qsl
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import core
 import fpl_views
-from config import BOT_TOKEN, DEV_MODE, ENTRY_FEE_BIRR, RUN_BOT, WEBAPP_URL
+from config import ADMIN_TELEGRAM_ID, BOT_TOKEN, DEV_MODE, ENTRY_FEE_BIRR, RUN_BOT, WEBAPP_URL
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -142,6 +142,22 @@ def _display_name(user):
     return user.get("username") or user.get("first_name") or "Player"
 
 
+def _is_admin(user):
+    return user["id"] == ADMIN_TELEGRAM_ID
+
+
+def _admin_money(players):
+    """Pot and payout in birr. Only ever returned to the admin — other
+    players' phones never receive these numbers at all."""
+    pot = players * ENTRY_FEE_BIRR
+    return {
+        "players": players,
+        "pot": pot,
+        "percent": int(core.PRIZE_SHARE * 100),
+        "payout": round(pot * core.PRIZE_SHARE),
+    }
+
+
 # ---------------------------------------------------------------------------
 # API — home / contest
 # ---------------------------------------------------------------------------
@@ -160,7 +176,8 @@ def home(user: dict = Depends(current_user)):
     out = {
         "user": {"id": tid, "name": _display_name(user), "first_name": user.get("first_name")},
         "fee": ENTRY_FEE_BIRR,
-        "prize_percent": int(core.PRIZE_SHARE * 100),
+        "is_admin": _is_admin(user),
+        "prize": core.get_prize(),
         "registered": bool(me),
         "team": {"id": me["team_id"], "name": me["team_name"]} if me else None,
         "entry": None,
@@ -178,9 +195,9 @@ def home(user: dict = Depends(current_user)):
             "paid": bool(entry and entry["paid"]),
             "pending": bool(entry and not entry["paid"]),
             "entrants": n,
-            "pot": n * ENTRY_FEE_BIRR,
-            "prize": round(n * ENTRY_FEE_BIRR * core.PRIZE_SHARE),
         }
+        if _is_admin(user):
+            out["admin"] = {"gameweek": gw, **_admin_money(n)}
 
     if live_gw:
         board = core.contest_leaderboard(live_gw)
@@ -255,15 +272,25 @@ def leaderboard(user: dict = Depends(current_user)):
             "rank": mine["rank"], "name": mine["username"], "team_name": mine["team_name"],
             "points": mine["points"], "is_me": True,
         }
-    pot = len(board) * ENTRY_FEE_BIRR
     return {
         "gameweek": gw,
         "entrants": len(board),
         "top": top,
         "me": me,
-        "pot": pot,
-        "prize": round(pot * core.PRIZE_SHARE),
+        "prize": core.get_prize(),
+        "admin": _admin_money(len(board)) if _is_admin(user) else None,
     }
+
+
+@app.get("/api/prize-image")
+def prize_image():
+    """The prize picture. Public on purpose (an <img> tag can't send login
+    headers) — it's just the picture of this week's prize."""
+    found = core.get_prize_image()
+    if not found:
+        raise HTTPException(404, "No prize picture set.")
+    data, mime = found
+    return Response(content=data, media_type=mime, headers={"Cache-Control": "public, max-age=3600"})
 
 
 # ---------------------------------------------------------------------------
