@@ -100,6 +100,12 @@ def init_db():
             PRIMARY KEY (telegram_id, gameweek, kind)
         )"""
     )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )"""
+    )
     conn.commit()
     conn.close()
 
@@ -452,6 +458,87 @@ def mark_reminded(telegram_id, gameweek, kind):
         "INSERT OR IGNORE INTO reminders_sent (telegram_id, gameweek, kind) VALUES (?, ?, ?)",
         (telegram_id, gameweek, kind),
     )
+
+
+# ---------------------------------------------------------------------------
+# Prize — a picture and a line of text the admin changes from Telegram
+# (/setprize). Stored next to the database, so it survives redeploys as long
+# as the Railway volume is attached.
+# ---------------------------------------------------------------------------
+PRIZE_IMAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "prize_image.bin")
+MAX_PRIZE_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_PRIZE_TEXT = 80
+PRIZE_IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
+
+
+def get_setting(key, default=None):
+    row = db_execute("SELECT value FROM app_settings WHERE key=?", (key,), fetchone=True)
+    return row[0] if row else default
+
+
+def set_setting(key, value):
+    if value is None:
+        db_execute("DELETE FROM app_settings WHERE key=?", (key,))
+    else:
+        db_execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+def _bump_prize_version():
+    # Changes the picture's web address so phones never show a stale copy.
+    set_setting("prize_version", str(int(time.time() * 1000)))
+
+
+def get_prize():
+    return {
+        "text": get_setting("prize_text", ""),
+        "has_image": bool(get_setting("prize_image_mime")) and os.path.exists(PRIZE_IMAGE_FILE),
+        "version": get_setting("prize_version", "0"),
+    }
+
+
+def set_prize_text(text):
+    text = " ".join((text or "").split())[:MAX_PRIZE_TEXT]
+    set_setting("prize_text", text or None)
+    _bump_prize_version()
+    return text
+
+
+def save_prize_image(data, mime):
+    mime = (mime or "").lower()
+    if mime not in PRIZE_IMAGE_TYPES:
+        raise ContestError("bad_image", "Please send a PNG, JPG or WEBP picture.")
+    if len(data) > MAX_PRIZE_IMAGE_BYTES:
+        raise ContestError("too_big", "That picture is too big — please keep it under 5 MB.")
+    folder = os.path.dirname(PRIZE_IMAGE_FILE)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(PRIZE_IMAGE_FILE, "wb") as f:
+        f.write(data)
+    set_setting("prize_image_mime", mime)
+    _bump_prize_version()
+
+
+def get_prize_image():
+    """(bytes, mime) of the prize picture, or None."""
+    mime = get_setting("prize_image_mime")
+    if not mime or not os.path.exists(PRIZE_IMAGE_FILE):
+        return None
+    with open(PRIZE_IMAGE_FILE, "rb") as f:
+        return f.read(), mime
+
+
+def clear_prize():
+    set_setting("prize_text", None)
+    set_setting("prize_image_mime", None)
+    try:
+        os.remove(PRIZE_IMAGE_FILE)
+    except FileNotFoundError:
+        pass
+    _bump_prize_version()
 
 
 # ---------------------------------------------------------------------------
