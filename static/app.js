@@ -36,6 +36,10 @@
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4l24 8v18c0 16-10 26-24 30C18 56 8 46 8 30V12z" fill="#5a0a63"/><path d="M32 10l18 6v14c0 12-7 20-18 24-11-4-18-12-18-24V16z" fill="none" stroke="#00ff85" stroke-width="3"/></svg>`
   );
 
+  const PH_PRIZE = svgUri(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect x="14" y="40" width="68" height="44" rx="8" fill="#e90052"/><rect x="10" y="30" width="76" height="16" rx="6" fill="#ff3d82"/><rect x="43" y="30" width="10" height="54" fill="#00ff85"/><path d="M48 30c-6-16-24-16-20-6 3 7 14 6 20 6zM48 30c6-16 24-16 20-6-3 7-14 6-20 6z" fill="none" stroke="#00ff85" stroke-width="5" stroke-linejoin="round"/></svg>`
+  );
+
   const playerImg = (code) =>
     `<img src="${PHOTO_URLS[0](code)}" data-k="p" data-c="${code}" data-n="0" alt="" loading="lazy">`;
   const badgeImg = (code, cls = "") =>
@@ -47,6 +51,11 @@
       const t = e.target;
       if (!t || t.tagName !== "IMG" || !t.dataset.k) return;
       const kind = t.dataset.k;
+      if (kind === "g") { // prize picture failed to load → show the gift placeholder
+        t.removeAttribute("data-k");
+        t.src = PH_PRIZE;
+        return;
+      }
       const list = kind === "p" ? PHOTO_URLS : BADGE_URLS;
       const next = Number(t.dataset.n) + 1;
       if (next < list.length) {
@@ -206,6 +215,8 @@
     }
 
     html += heroHtml(d);
+    html += prizeCardHtml(d.prize);
+    if (d.admin) html += adminCardHtml(d.admin);
 
     const l = d.live;
     if (l) {
@@ -222,7 +233,7 @@
     html += `<div class="card"><h3 style="margin-bottom:6px">How it works</h3><ol class="steps">
       <li><div><b>Link your FPL team</b><div class="muted small">One time only.</div></div></li>
       <li><div><b>Pay ${d.fee} birr</b><div class="muted small">Telebirr, CBE Birr or card — confirmed automatically.</div></div></li>
-      <li><div><b>Highest score wins</b><div class="muted small">The best gameweek score takes ${d.prize_percent}% of the pot.</div></div></li>
+      <li><div><b>Highest score wins</b></div></li>
     </ol></div></div>`;
 
     view.innerHTML = html;
@@ -251,14 +262,35 @@
       <div class="eyebrow">Gameweek ${e.gameweek} · entries close in</div>
       <div class="big" data-countdown="${esc(e.deadline)}">${fmtCountdown(new Date(e.deadline) - Date.now())}</div>
       <div class="sub">Deadline ${esc(fmtDeadline(e.deadline))}</div>
-      <div class="stats">
+      <div class="stats two">
         <div class="stat"><b>${d.fee}</b><span>Entry (birr)</span></div>
-        <div class="stat"><b>${e.pot.toLocaleString()}</b><span>Pot (birr)</span></div>
-        <div class="stat"><b>${e.prize.toLocaleString()}</b><span>Prize (birr)</span></div>
+        <div class="stat"><b>${e.entrants.toLocaleString()}</b><span>Player${e.entrants === 1 ? "" : "s"} entered</span></div>
       </div>
       ${cta}
-      <div class="sub center" style="margin-top:10px">${e.entrants} player${e.entrants === 1 ? "" : "s"} entered so far</div>
     </div>`;
+  }
+
+  // The prize everyone sees: a picture + a line of text, both set by the admin
+  // from Telegram with /setprize (no code change needed).
+  function prizeCardHtml(p) {
+    const img = p.has_image
+      ? `<img src="/api/prize-image?v=${encodeURIComponent(p.version)}" data-k="g" alt="" loading="lazy">`
+      : `<img src="${PH_PRIZE}" alt="">`;
+    return `<div class="card prize-card">
+      <div class="prize-img">${img}</div>
+      <div class="grow"><div class="eyebrow">This week's prize</div>
+      <div class="prize-title">${p.text ? esc(p.text) : "To be announced"}</div></div></div>`;
+  }
+
+  // Pot and payout in birr — the server only sends this to the admin.
+  function adminCardHtml(a) {
+    return `<div class="card admin-card">
+      <div class="row between"><b>Contest money</b><span class="pill warn">🔒 Only you can see this</span></div>
+      <div class="admin-grid">
+        <div><span>Pot</span><b>${a.pot.toLocaleString()} birr</b></div>
+        <div><span>${a.percent}% payout</span><b>${a.payout.toLocaleString()} birr</b></div>
+        <div><span>Players</span><b>${a.players}</b></div>
+      </div></div>`;
   }
 
   function startCountdown(deadline) {
@@ -346,8 +378,8 @@
     if (!d.gameweek) { view.innerHTML = emptyState("🏆", "No gameweek yet", "The leaderboard appears once the season starts."); return; }
     let html = `<div class="stack fade-in">
       <div class="card"><div class="row between"><div><div class="muted small">Gameweek ${d.gameweek}</div><h2 style="font-size:22px">Top 10</h2></div>
-        <div style="text-align:right"><div class="muted small">Prize</div><b style="font-size:20px;color:var(--accent)">${d.prize.toLocaleString()} birr</b></div></div>
-        <div class="muted small" style="margin-top:6px">${d.entrants} player${d.entrants === 1 ? "" : "s"} · pot ${d.pot.toLocaleString()} birr</div></div>`;
+        <div style="text-align:right;min-width:0"><div class="muted small">Prize</div><b style="font-size:17px;color:var(--accent)">${d.prize.text ? esc(d.prize.text) : "To be announced"}</b></div></div>
+        <div class="muted small" style="margin-top:6px">${d.entrants} player${d.entrants === 1 ? "" : "s"}${d.admin ? ` · pot ${d.admin.pot.toLocaleString()} birr · ${d.admin.percent}% payout ${d.admin.payout.toLocaleString()} birr (only you see this)` : ""}</div></div>`;
 
     if (!d.top.length) {
       html += emptyState("⏳", "No entries yet", "Be the first to enter this gameweek.");
