@@ -222,7 +222,7 @@
     html += `<div class="card"><h3 style="margin-bottom:6px">How it works</h3><ol class="steps">
       <li><div><b>Link your FPL team</b><div class="muted small">One time only.</div></div></li>
       <li><div><b>Pay ${d.fee} birr</b><div class="muted small">Telebirr, CBE Birr or card — confirmed automatically.</div></div></li>
-      <li><div><b>Highest score wins</b><div class="muted small">The best gameweek score takes ${d.prize_percent}% of the pot.</div></div></li>
+      <li><div><b>Highest score wins</b><div class="muted small">The best gameweek score wins the prize.</div></div></li>
     </ol></div></div>`;
 
     view.innerHTML = html;
@@ -251,10 +251,10 @@
       <div class="eyebrow">Gameweek ${e.gameweek} · entries close in</div>
       <div class="big" data-countdown="${esc(e.deadline)}">${fmtCountdown(new Date(e.deadline) - Date.now())}</div>
       <div class="sub">Deadline ${esc(fmtDeadline(e.deadline))}</div>
-      <div class="stats">
+      <div class="stats${d.is_admin ? "" : " single"}">
         <div class="stat"><b>${d.fee}</b><span>Entry (birr)</span></div>
-        <div class="stat"><b>${e.pot.toLocaleString()}</b><span>Pot (birr)</span></div>
-        <div class="stat"><b>${e.prize.toLocaleString()}</b><span>Prize (birr)</span></div>
+        ${d.is_admin ? `<div class="stat"><b>${e.pot.toLocaleString()}</b><span>Pot (birr)</span></div>
+        <div class="stat"><b>${e.prize.toLocaleString()}</b><span>Prize (birr)</span></div>` : ""}
       </div>
       ${cta}
       <div class="sub center" style="margin-top:10px">${e.entrants} player${e.entrants === 1 ? "" : "s"} entered so far</div>
@@ -346,8 +346,8 @@
     if (!d.gameweek) { view.innerHTML = emptyState("🏆", "No gameweek yet", "The leaderboard appears once the season starts."); return; }
     let html = `<div class="stack fade-in">
       <div class="card"><div class="row between"><div><div class="muted small">Gameweek ${d.gameweek}</div><h2 style="font-size:22px">Top 10</h2></div>
-        <div style="text-align:right"><div class="muted small">Prize</div><b style="font-size:20px;color:var(--accent)">${d.prize.toLocaleString()} birr</b></div></div>
-        <div class="muted small" style="margin-top:6px">${d.entrants} player${d.entrants === 1 ? "" : "s"} · pot ${d.pot.toLocaleString()} birr</div></div>`;
+        ${d.is_admin ? `<div style="text-align:right"><div class="muted small">Prize</div><b style="font-size:20px;color:var(--accent)">${d.prize.toLocaleString()} birr</b></div>` : ""}</div>
+        <div class="muted small" style="margin-top:6px">${d.entrants} player${d.entrants === 1 ? "" : "s"}${d.is_admin ? ` · pot ${d.pot.toLocaleString()} birr` : ""}</div></div>`;
 
     if (!d.top.length) {
       html += emptyState("⏳", "No entries yet", "Be the first to enter this gameweek.");
