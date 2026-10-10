@@ -210,9 +210,9 @@
     const l = d.live;
     if (l) {
       html += `<div class="card">
-        <div class="row between"><b>Gameweek ${l.gameweek} · live standings</b><span class="pill">${l.entrants} entered</span></div>
+        <div class="row between"><b>Gameweek ${l.gameweek} · live standings</b>${d.is_admin ? `<span class="pill">${l.entrants} entered</span>` : ""}</div>
         ${l.entered
-          ? `<div class="row between" style="margin-top:12px"><div><div class="muted small">Your rank</div><div style="font-size:28px;font-weight:900">#${l.rank}<span class="muted small" style="font-weight:600"> of ${l.entrants}</span></div></div>
+          ? `<div class="row between" style="margin-top:12px"><div><div class="muted small">Your rank</div><div style="font-size:28px;font-weight:900">#${l.rank}${d.is_admin ? `<span class="muted small" style="font-weight:600"> of ${l.entrants}</span>` : ""}</div></div>
              <div style="text-align:right"><div class="muted small">Points</div><div style="font-size:28px;font-weight:900;color:var(--accent)">${l.points}</div></div></div>
              <div style="height:12px"></div><button class="btn ghost small" data-act="goto" data-tab="board">See the Top 10</button>`
           : `<p class="muted small" style="margin:8px 0 12px">You're not entered in this gameweek. Follow along — and enter the next one!</p><button class="btn ghost small" data-act="goto" data-tab="board">See the Top 10</button>`}
@@ -257,7 +257,7 @@
         <div class="stat"><b>${e.prize.toLocaleString()}</b><span>Prize (birr)</span></div>` : ""}
       </div>
       ${cta}
-      <div class="sub center" style="margin-top:10px">${e.entrants} player${e.entrants === 1 ? "" : "s"} entered so far</div>
+      ${d.is_admin ? `<div class="sub center" style="margin-top:10px">${e.entrants} player${e.entrants === 1 ? "" : "s"} entered so far</div>` : ""}
     </div>`;
   }
 
@@ -346,8 +346,8 @@
     if (!d.gameweek) { view.innerHTML = emptyState("🏆", "No gameweek yet", "The leaderboard appears once the season starts."); return; }
     let html = `<div class="stack fade-in">
       <div class="card"><div class="row between"><div><div class="muted small">Gameweek ${d.gameweek}</div><h2 style="font-size:22px">Top 10</h2></div>
-        ${d.is_admin ? `<div style="text-align:right"><div class="muted small">Prize</div><b style="font-size:20px;color:var(--accent)">${d.prize.toLocaleString()} birr</b></div>` : ""}</div>
-        <div class="muted small" style="margin-top:6px">${d.entrants} player${d.entrants === 1 ? "" : "s"}${d.is_admin ? ` · pot ${d.pot.toLocaleString()} birr` : ""}</div></div>`;
+        <div style="text-align:right"><div class="muted small">Prize</div><b style="font-size:20px;color:var(--accent)">${d.prize.toLocaleString()} birr</b></div></div>
+        ${d.is_admin ? `<div class="muted small" style="margin-top:6px">${d.entrants} player${d.entrants === 1 ? "" : "s"} · pot ${d.pot.toLocaleString()} birr</div>` : ""}</div>`;
 
     if (!d.top.length) {
       html += emptyState("⏳", "No entries yet", "Be the first to enter this gameweek.");
