@@ -235,6 +235,265 @@ def get_gameweek_score(team_id, gameweek):
     return _history_score(team_id, gameweek)
 
 
+def fetch_team_info(team_id):
+    """Looks up an FPL team. Returns None if it doesn't exist; raises if FPL
+    can't be reached (so callers can say 'try again' instead of 'invalid')."""
+    try:
+        data = fpl_get(f"entry/{team_id}/", 300)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return None
+        raise
+    manager = f"{data.get('player_first_name', '')} {data.get('player_last_name', '')}".strip()
+    return {"id": team_id, "name": data.get("name"), "manager": manager}
+
+
+_idx = {"src": None, "elements": {}, "teams": {}}
+
+
+def fpl_index():
+    """(elements_by_id, teams_by_id) built from the cached bootstrap data."""
+    b = bootstrap()
+    if _idx["src"] is not b:
+        _idx["elements"] = {e["id"]: e for e in b["elements"]}
+        _idx["teams"] = {t["id"]: t for t in b["teams"]}
+        _idx["src"] = b
+    return _idx["elements"], _idx["teams"]
+
+
+# ---------------------------------------------------------------------------
+# Users & entries
+# ---------------------------------------------------------------------------
+def get_user(telegram_id):
+    row = db_execute(
+        "SELECT telegram_id, username, fpl_team_id, team_name FROM users WHERE telegram_id=?",
+        (telegram_id,),
+        fetchone=True,
+    )
+    if not row:
+        return None
+    return {"telegram_id": row[0], "username": row[1], "team_id": row[2], "team_name": row[3]}
+
+
+def register_user(telegram_id, username, team_id, team_name):
+    db_execute(
+        "INSERT INTO users (telegram_id, username, fpl_team_id, team_name) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(telegram_id) DO UPDATE SET fpl_team_id=excluded.fpl_team_id, "
+        "username=excluded.username, team_name=excluded.team_name",
+        (telegram_id, username, team_id, team_name),
+    )
+
+
+def get_entry(telegram_id, gameweek):
+    row = db_execute(
+        "SELECT paid, tx_reference FROM entries WHERE telegram_id=? AND gameweek=?",
+        (telegram_id, gameweek),
+        fetchone=True,
+    )
+    if not row:
+        return None
+    return {"paid": bool(row[0]), "tx_reference": row[1]}
+
+
+def count_paid_entries(gameweek):
+    row = db_execute(
+        "SELECT COUNT(*) FROM entries WHERE gameweek=? AND paid=1", (gameweek,), fetchone=True
+    )
+    return row[0] if row else 0
+
+
+def mark_paid(telegram_id, gameweek):
+    """Marks an entry paid. True only the FIRST time (so we never double-notify)."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE entries SET paid=1 WHERE telegram_id=? AND gameweek=? AND paid=0",
+            (telegram_id, gameweek),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Chapa payments
+# ---------------------------------------------------------------------------
+def chapa_headers():
+    return {"Authorization": f"Bearer {CHAPA_SECRET_KEY}"}
+
+
+def create_payment_link(tx_ref, amount, first_name, last_name, telegram_id):
+    """Asks Chapa for a checkout URL the user can tap to pay."""
+    payload = {
+        "amount": str(amount),
+        "currency": "ETB",
+        # Chapa requires an email; users don't give us one, so we use a
+        # placeholder tied to their Telegram ID. example.com is rejected by
+        # Chapa's validator, so we use a real, universally-recognized domain.
+        # Chapa never actually emails this address.
+        "email": f"fplcontest.user{telegram_id}@gmail.com",
+        "first_name": first_name or "FPL",
+        "last_name": last_name or "Player",
+        "tx_ref": tx_ref,
+        "return_url": CHAPA_RETURN_URL,
+        # Chapa limits customization.title to 16 characters — keep this short.
+        "customization": {
+            "title": "FPL Contest",
+            "description": f"GW entry fee - {amount} ETB",
+        },
+    }
+    resp = requests.post(CHAPA_INITIALIZE_URL, json=payload, headers=chapa_headers(), timeout=15)
+    if resp.status_code != 200:
+        logger.error(f"Chapa initialize rejected ({resp.status_code}): {resp.text}")
+        return None
+    data = resp.json()
+    if data.get("status") == "success":
+        return data["data"]["checkout_url"]
+    logger.error(f"Chapa initialize returned non-success: {data}")
+    return None
+
+
+def verify_payment(tx_ref):
+    """True if Chapa confirms this transaction succeeded."""
+    resp = requests.get(CHAPA_VERIFY_URL.format(tx_ref=tx_ref), headers=chapa_headers(), timeout=15)
+    if resp.status_code != 200:
+        return False
+    data = resp.json()
+    return data.get("status") == "success" and data.get("data", {}).get("status") == "success"
+
+
+def start_payment(telegram_id, first_name, last_name):
+    """Shared by /pay and the app's Pay button. Returns
+    {"checkout_url", "gameweek", "deadline"} or raises ContestError."""
+    if not get_user(telegram_id):
+        raise ContestError("not_registered", "Please register your FPL team ID first.")
+
+    try:
+        window = get_entry_window()
+    except Exception:
+        # Fail safe: if we can't confirm the deadline, block entry rather
+        # than risk letting someone pay in after results are known.
+        logger.exception("Could not check FPL deadline")
+        raise ContestError("deadline_unknown", "Couldn't confirm the FPL deadline right now — please try again in a moment.")
+    if not window:
+        raise ContestError("closed", "⛔ No gameweek is open for entries right now.")
+
+    gw = window["gameweek"]
+    existing = get_entry(telegram_id, gw)
+    if existing and existing["paid"]:
+        raise ContestError("already_paid", f"You're already confirmed and entered for GW{gw}! ✅")
+
+    tx_ref = f"fplgw{gw}-{telegram_id}-{int(time.time())}"
+    try:
+        checkout_url = create_payment_link(tx_ref, ENTRY_FEE_BIRR, first_name, last_name, telegram_id)
+    except Exception:
+        logger.exception("Chapa initialize failed")
+        checkout_url = None
+    if not checkout_url:
+        raise ContestError("gateway", "Sorry, couldn't create a payment link right now — please try again in a moment.")
+
+    db_execute(
+        "INSERT INTO entries (telegram_id, gameweek, paid, tx_reference) VALUES (?, ?, 0, ?) "
+        "ON CONFLICT(telegram_id, gameweek) DO UPDATE SET tx_reference=excluded.tx_reference",
+        (telegram_id, gw, tx_ref),
+    )
+    return {"checkout_url": checkout_url, "gameweek": gw, "deadline": window["deadline"]}
+
+
+def confirm_pending_for_user(telegram_id):
+    """Checks this user's unpaid entries with Chapa right now. Returns the
+    list of gameweeks newly confirmed."""
+    rows = db_execute(
+        "SELECT gameweek, tx_reference FROM entries WHERE telegram_id=? AND paid=0 AND tx_reference IS NOT NULL",
+        (telegram_id,),
+        fetch=True,
+    )
+    confirmed = []
+    for gw, ref in rows:
+        try:
+            if verify_payment(ref) and mark_paid(telegram_id, gw):
+                add_notification(
+                    telegram_id, "payment", "Payment confirmed ✅",
+                    f"You're entered in Gameweek {gw}. Good luck!",
+                )
+                confirmed.append(gw)
+        except Exception:
+            logger.exception(f"Payment verify failed for tx_ref {ref}")
+    return confirmed
+
+
+# ---------------------------------------------------------------------------
+# Notifications & settings
+# ---------------------------------------------------------------------------
+def add_notification(telegram_id, kind, title, body):
+    db_execute(
+        "INSERT INTO notifications (telegram_id, kind, title, body, created_at) VALUES (?, ?, ?, ?, ?)",
+        (telegram_id, kind, title, body, int(time.time())),
+    )
+
+
+def list_notifications(telegram_id, limit=30):
+    rows = db_execute(
+        "SELECT id, kind, title, body, created_at, is_read FROM notifications "
+        "WHERE telegram_id=? ORDER BY id DESC LIMIT ?",
+        (telegram_id, limit),
+        fetch=True,
+    )
+    return [
+        {"id": r[0], "kind": r[1], "title": r[2], "body": r[3], "created_at": r[4], "read": bool(r[5])}
+        for r in rows
+    ]
+
+
+def unread_count(telegram_id):
+    row = db_execute(
+        "SELECT COUNT(*) FROM notifications WHERE telegram_id=? AND is_read=0", (telegram_id,), fetchone=True
+    )
+    return row[0] if row else 0
+
+
+def mark_all_read(telegram_id):
+    db_execute("UPDATE notifications SET is_read=1 WHERE telegram_id=? AND is_read=0", (telegram_id,))
+
+
+def get_notify_deadline(telegram_id):
+    row = db_execute("SELECT notify_deadline FROM settings WHERE telegram_id=?", (telegram_id,), fetchone=True)
+    return True if row is None else bool(row[0])
+
+
+def set_notify_deadline(telegram_id, value):
+    db_execute(
+        "INSERT INTO settings (telegram_id, notify_deadline) VALUES (?, ?) "
+        "ON CONFLICT(telegram_id) DO UPDATE SET notify_deadline=excluded.notify_deadline",
+        (telegram_id, 1 if value else 0),
+    )
+
+
+def reminder_targets(gameweek, kind):
+    """Registered users who still need a `kind`-hour reminder for this gameweek."""
+    rows = db_execute(
+        "SELECT u.telegram_id FROM users u "
+        "LEFT JOIN settings s ON s.telegram_id = u.telegram_id "
+        "WHERE COALESCE(s.notify_deadline, 1) = 1 "
+        "AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.telegram_id = u.telegram_id AND e.gameweek = ? AND e.paid = 1) "
+        "AND NOT EXISTS (SELECT 1 FROM reminders_sent r WHERE r.telegram_id = u.telegram_id AND r.gameweek = ? AND r.kind = ?)",
+        (gameweek, gameweek, kind),
+        fetch=True,
+    )
+    return [r[0] for r in rows]
+
+
+def mark_reminded(telegram_id, gameweek, kind):
+    db_execute(
+        "INSERT OR IGNORE INTO reminders_sent (telegram_id, gameweek, kind) VALUES (?, ?, ?)",
+        (telegram_id, gameweek, kind),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Contest leaderboard
+# ---------------------------------------------------------------------------
 _lb_cache = {}
 _lb_lock = threading.Lock()
 
