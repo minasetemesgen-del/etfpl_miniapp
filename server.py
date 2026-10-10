@@ -262,17 +262,17 @@ def leaderboard(user: dict = Depends(current_user)):
             "rank": mine["rank"], "name": mine["username"], "team_name": mine["team_name"],
             "points": mine["points"], "is_me": True,
         }
+    pot = len(board) * ENTRY_FEE_BIRR
     out = {
         "gameweek": gw,
         "entrants": len(board),
         "top": top,
         "me": me,
         "is_admin": _is_admin(user),
+        "prize": round(pot * core.PRIZE_SHARE),  # everyone sees the prize
     }
     if _is_admin(user):
-        pot = len(board) * ENTRY_FEE_BIRR
-        out["pot"] = pot
-        out["prize"] = round(pot * core.PRIZE_SHARE)
+        out["pot"] = pot  # pot is admin-only
     return out
 
 
